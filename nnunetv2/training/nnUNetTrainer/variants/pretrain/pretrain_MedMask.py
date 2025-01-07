@@ -1,7 +1,5 @@
 # region Description of the region
 import torch
-torch.cuda.set_device(0)  # 0번 GPU 사용 (nvidia-smi에서 확인된 GPU ID)
-device = torch.device('cuda:0')
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
@@ -11,8 +9,6 @@ from time import sleep
 from datetime import datetime
 import numpy as np
 from timm.utils import ModelEma
-import sys
-sys.path.insert(0, '/home/yoonji/AnatoMask/')
 from nnunetv2.training.lr_scheduler.LinearWarmupCosine import LinearWarmupCosineAnnealingLR
 from STUNet_head import STUNet
 
@@ -21,7 +17,7 @@ from decoder3D import LightDecoder
 from AnatoMask import SparK
 
 from torch.cuda.amp import GradScaler, autocast
-
+import sys
 from nnunetv2.training.dataloading.data_loader_3d import nnUNetDataLoader3D
 from nnunetv2.training.dataloading.nnunet_dataset import nnUNetDataset
 from nnunetv2.training.data_augmentation.compute_initial_patch_size import get_patch_size
@@ -182,7 +178,7 @@ def get_validation_transforms(deep_supervision_scales: Union[List, Tuple],
 
 # endregion
 
-# device = torch.device("cuda:4")
+device = torch.device("cuda:0")
 
 # Define your models here:
 pool_op_kernel_sizes = [[2, 2, 2], [2, 2, 2], [2, 2, 2], [2, 2, 2], [1,1,1]]
@@ -244,7 +240,7 @@ AMP = False
 guide = True
 alpha = 0.9
 
-output_folder = '/home/yoonji/AnatoMask/nnUNet_results/Dataset601_Total/Pretraining/' + model_name +'_rebuttal'
+output_folder = '/home/yoonji/nnUNet_results/Dataset601_organs/Pretraining/' + model_name
 timestamp = datetime.now()
 maybe_mkdir_p(output_folder)
 
@@ -323,7 +319,7 @@ dl_tr = nnUNetDataLoader3D(dataset_tr, batch_size,
 iters_train = len(dataset_tr) // batch_size
 
 deep_supervision_scales = list(list(i) for i in 1 / np.cumprod(np.vstack(
-            pool_op_kernel_sizes), axis=0))[:-1]
+            configuration_manager.pool_op_kernel_sizes), axis=0))[:-1]
 mirror_axes = (0, 1, 2)
 
 tr_transforms = get_training_transforms(
@@ -397,20 +393,33 @@ for i in range(epoch):
 
         if AMP:
             with torch.cuda.amp.autocast():
-                mask1 = model.module.mask(batch_size, device)
+                mask_full = model.module.mask(batch_size, device) # 수정
+                mask_intensity = model.module.mask_intensity(batch_size, device)
                 if model_ema is not None:
                     with torch.no_grad():
-                        inp1, rec1 = model_ema.ema(inp, active_b1ff=mask1)
-                        l2_loss = ((rec1 - inp1) ** 2).mean(dim=2, keepdim=False)
-                        non_active = mask1.logical_not().int().view(mask1.shape[0], -1)  # (B, 1, f, f) => (B, L)
-                        recon_loss = l2_loss * non_active
+                        mae_loss, student_output, _ = model(inp, active_b1ff=mask_full)
+                        _, teacher_output, _ = model_ema.ema(inp, active_b1ff=mask_intensity)
 
-                mask, easy_mask = model_ema.ema.generate_mask(recon_loss, guide=guide, epoch=i, total_epoch=epoch - 1)
-                mask = mask.to(device, non_blocking=True)
-                inpp, recc = model(inp, active_b1ff=mask, vis=False)
-                loss_p, _ = model.module.forward_loss(inpp, recc, mask)
+                        student_outs = student_output.chunck(2)
+                        teacher_outs = teacher_output.chunck(2)
 
-                loss = loss_p
+                        bc_loss = 0
+                        n_loss_terms = 0
+                        for iq, q in enumerate(teacher_outs):
+                            for v in range(len(student_outs)):
+                                if v == iq:
+                                    continue
+                                loss = loss_ftn(student_outs[v], q)
+                                bc_loss += loss
+                                n_loss_terms += 1
+                        bc_loss /= n_loss_terms
+                    mae_loss_value = mae_loss.item()
+                    bc_loss_value = bc_loss.item()
+                    total_loss_value = args.w_mae * mae_loss_value + args.w_bc * bc_loss_value
+
+                    mae_loss /= accum_iter
+                    bc_loss /= accum_iter
+
 
             optimizer.zero_grad()
             scaler.scale(loss).backward()
@@ -481,4 +490,3 @@ for i in range(epoch):
         'current_epoch': i
     }
     torch.save(checkpoint, join(output_folder, model_name + '_head_latest.pt'))
-

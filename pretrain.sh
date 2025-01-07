@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python /home/yoonji/AnatoMask/nnunetv2/training/nnUNetTrainer/variants/pretrain/pretrain_AntoMask.py

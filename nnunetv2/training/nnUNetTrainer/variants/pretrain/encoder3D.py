@@ -7,6 +7,9 @@ _cur_active: torch.Tensor = None            # B1ff
 def _get_active_ex_or_ii(H, W, D, returning_active_ex=True):
     h_repeat, w_repeat, d_repeat = H // _cur_active.shape[-3], W // _cur_active.shape[-2], D// _cur_active.shape[-1]
     active_ex = _cur_active.repeat_interleave(h_repeat, dim=2).repeat_interleave(w_repeat, dim=3).repeat_interleave(d_repeat, dim=4)
+
+    # if active_ex.shape[2:] != (H,W,D):
+    #     active_ex = torch.nn.functional.interpolate(active_ex.float(), size=(H,W,D), mode='nearest').bool() # bool로 바꾸는게 맞는가..?
     return active_ex if returning_active_ex else active_ex.squeeze(1).nonzero(as_tuple=True)  # ii: bi, hi, wi, di
 
 def sp_conv_forward(self, x: torch.Tensor):

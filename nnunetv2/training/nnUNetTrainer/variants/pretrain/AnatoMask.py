@@ -3,7 +3,7 @@ from typing import List
 import sys
 import torch
 import torch.nn as nn
-from timm.models.layers import trunc_normal_
+from timm.layers import trunc_normal_
 import math
 import encoder3D
 from decoder3D import LightDecoder
@@ -72,11 +72,17 @@ class SparK(nn.Module):
 
         print(f'[SparK.__init__] dims of mask_tokens={tuple(p.numel() for p in self.mask_tokens)}')
 
-    def mask(self, B: int, device, generator=None):
+    def mask(self, B: int, device, generator=None): # masking randomly
         h, w, d= self.fmap_h, self.fmap_w, self.fmap_d
         idx = torch.rand(B, h * w * d, generator=generator).argsort(dim=1)
         idx = idx[:, :self.len_keep].to(device)  # (B, len_keep)
         return torch.zeros(B, h * w * d,dtype=torch.bool, device=device).scatter_(dim=1, index=idx, value=True).view(B, 1, h, w, d)
+    
+    def mask_original(self, B: int, device, generator=None): # masking based on uncertainty
+        h, w, d= self.fmap_h, self.fmap_w, self.fmap_d
+    
+    def mask_intensity(self, B:int, device, generator=None):
+        h, w, d =self.famp_h, self.fmap_w, self.fmap_d
 
     @torch.no_grad()
     def generate_mask(self, loss_pred, guide = True, epoch = 0, total_epoch = 200, generator=None, original_mask = None):
@@ -144,6 +150,8 @@ class SparK(nn.Module):
         active_b1hwd = active_b1ff.repeat_interleave(self.downsample_ratio, 2).repeat_interleave(self.downsample_ratio,
                                                                                                  3).repeat_interleave(
             self.downsample_ratio, 4)  # (B, 1, H, W)
+
+        
         masked_bchwd = inp_bchwd * active_b1hwd
 
         # step2. Encode: get hierarchical encoded sparse features (a list containing 4 feature maps at 4 scales)
